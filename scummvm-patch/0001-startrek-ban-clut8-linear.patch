@@ -1,0 +1,237 @@
+--- a/engines/startrek/graphics.h	2026-08-25 05:15:44.079304329 +0000
++++ b/engines/startrek/graphics.h	2026-08-25 05:16:35.911416030 +0000
+@@ -29,6 +29,7 @@
+ #include "common/ptr.h"
+ #include "common/rect.h"
+ #include "common/stream.h"
++#include "graphics/surface.h"
+ 
+ using Common::SharedPtr;
+ using Common::String;
+@@ -62,6 +63,12 @@
+ 	byte *getBackgroundPixels();
+ 	byte *lockScreenPixels();
+ 	void unlockScreenPixels();
++	/**
++	 * Write a VGA palette index to the locked screen.
++	 * BAN offsets/skips are packed 320x200 CLUT8 addresses; this maps them
++	 * through Surface::getBasePtr so OpenGL pitch / 32-bit pixels do not scatter.
++	 */
++	void writeScreenIndexed(int linearOffset, byte color);
+ 
+ 	void clearScreenAndPriBuffer();
+ 	/**
+@@ -173,6 +180,7 @@
+ 	int _pushedNumSprites;
+ 
+ 	Common::Point _lockedMousePos;
++	::Graphics::Surface *_lockedScreen;
+ };
+ 
+ } // End of namespace StarTrek
+--- a/engines/startrek/graphics.cpp	2026-08-25 05:15:44.175304534 +0000
++++ b/engines/startrek/graphics.cpp	2026-08-25 05:16:35.911416030 +0000
+@@ -24,12 +24,14 @@
+ #include "startrek/resource.h"
+ 
+ #include "common/algorithm.h"
++#include "common/debug.h"
+ #include "common/config-manager.h"
+ #include "common/events.h"
+ #include "common/rendermode.h"
+ #include "graphics/cursorman.h"
+ #include "graphics/paletteman.h"
+ #include "graphics/surface.h"
++#include <cstring>
+ 
+ namespace StarTrek {
+ 
+@@ -60,6 +62,7 @@
+ 	_paletteFadeLevel = 0;
+ 	_lockedMousePos = Common::Point(-1, -1);
+ 	_backgroundImage = nullptr;
++	_lockedScreen = nullptr;
+ }
+ 
+ Graphics::~Graphics() {
+@@ -110,11 +113,45 @@
+ }
+ 
+ byte *Graphics::lockScreenPixels() {
+-	return (byte *)_vm->_system->lockScreen()->getPixels();
++	_lockedScreen = _vm->_system->lockScreen();
++	static bool loggedFormat = false;
++	if (!loggedFormat && _lockedScreen) {
++		loggedFormat = true;
++		debug("StarTrek lockScreen: %dx%d pitch=%d bpp=%d",
++			_lockedScreen->w, _lockedScreen->h, _lockedScreen->pitch,
++			_lockedScreen->format.bytesPerPixel);
++	}
++	return (byte *)_lockedScreen->getPixels();
+ }
+ 
+ void Graphics::unlockScreenPixels() {
+ 	_vm->_system->unlockScreen();
++	_lockedScreen = nullptr;
++}
++
++void Graphics::writeScreenIndexed(int linearOffset, byte color) {
++	if (!_lockedScreen)
++		return;
++	if (linearOffset < 0 || linearOffset >= SCREEN_WIDTH * SCREEN_HEIGHT)
++		return;
++
++	const int x = linearOffset % SCREEN_WIDTH;
++	const int y = linearOffset / SCREEN_WIDTH;
++
++	if (_lockedScreen->format.bytesPerPixel == 1) {
++		byte *p = (byte *)_lockedScreen->getBasePtr(x, y);
++		*p = color;
++		return;
++	}
++
++	// VGA palette is 6-bit stored in _palData; expand to 8-bit for truecolor backends.
++	byte r = 0, g = 0, b = 0;
++	if (_palData) {
++		r = _palData[color * 3] << 2;
++		g = _palData[color * 3 + 1] << 2;
++		b = _palData[color * 3 + 2] << 2;
++	}
++	_lockedScreen->setPixel(x, y, _lockedScreen->format.RGBToColor(r, g, b));
+ }
+ 
+ void Graphics::clearScreenAndPriBuffer() {
+@@ -565,8 +602,15 @@
+ }
+ 
+ void Graphics::drawAllSpritesInRectToSurface(const Common::Rect &rect, ::Graphics::Surface *surface) {
+-	surface->copyFrom(*_vm->_system->lockScreen());
+-	_vm->_system->unlockScreen();
++	// Always composite onto a packed 320x200 CLUT8 buffer. Sprite drawing and BAN
++	// RLE both assume SCREEN_WIDTH stride and 8-bit indices; copyFrom(lockScreen())
++	// is wrong when the backend surface is pitched or 32-bit.
++	const ::Graphics::PixelFormat format = ::Graphics::PixelFormat::createFormatCLUT8();
++	surface->create(SCREEN_WIDTH, SCREEN_HEIGHT, format);
++	if (_backgroundImage && _backgroundImage->pixels)
++		memcpy(surface->getPixels(), _backgroundImage->pixels, SCREEN_WIDTH * SCREEN_HEIGHT);
++	else
++		memset(surface->getPixels(), 0, SCREEN_WIDTH * SCREEN_HEIGHT);
+ 
+ 	for (int i = 0; i < _numSprites; i++) {
+ 		Sprite *sprite = _sprites[i];
+--- a/engines/startrek/actors.cpp	2026-08-25 05:15:44.291304781 +0000
++++ b/engines/startrek/actors.cpp	2026-08-25 05:16:35.911416030 +0000
+@@ -302,30 +302,34 @@
+ 	uint16 offset = banFile->readUint16();
+ 	int32 size = banFile->readUint16();
+ 
+-	byte *dest1 = screenPixels + offset;
++	// Background is a packed 320x200 CLUT8 bitmap. The hardware/OpenGL screen is not:
++	// keep a 320-linear cursor for writes through writeScreenIndexed().
++	int linear = offset;
+ 	byte *dest2 = bgPixels + offset;
++	(void)screenPixels;
+ 
+ 	// Skip 8 bytes (rectangle encompassing the area being drawn to)
+ 	banFile->skip(8);
+ 
+ 	while (--size >= 0) {
+-		assert(dest1 >= screenPixels && dest1 < screenPixels + SCREEN_WIDTH * SCREEN_HEIGHT);
++		assert(linear >= 0 && linear < SCREEN_WIDTH * SCREEN_HEIGHT);
+ 		assert(dest2 >= bgPixels && dest2 < bgPixels + SCREEN_WIDTH * SCREEN_HEIGHT);
+ 
+ 		int8 b = banFile->readByte();
+ 
+ 		if (b == -128) {	// Add value to destination (usually jumping to next row)
+ 			uint16 skip = banFile->readUint16();
+-			dest1 += skip;
++			linear += skip;
+ 			dest2 += skip;
+ 		} else if (b < 0) { // Repeated byte
+ 			byte c = banFile->readByte();
+ 			if (c == 0) {
+-				dest1 += (-b) + 1;
++				linear += (-b) + 1;
+ 				dest2 += (-b) + 1;
+ 			} else {
+ 				for (int j = 0; j < (-b) + 1; j++) {
+-					(*dest1++) = c;
++					_gfx->writeScreenIndexed(linear, c);
++					linear++;
+ 					(*dest2++) = c;
+ 				}
+ 			}
+@@ -334,11 +338,12 @@
+ 			while (b-- != 0) {
+ 				byte c = banFile->readByte();
+ 				if (c == 0) {
+-					dest1++;
++					linear++;
+ 					dest2++;
+ 				} else {
+-					*(dest1++) = c;
+-					*(dest2++) = c;
++					_gfx->writeScreenIndexed(linear, c);
++					linear++;
++					*dest2++ = c;
+ 				}
+ 			}
+ 		}
+@@ -382,39 +387,37 @@
+ 			::Graphics::Surface surface;
+ 			_gfx->drawAllSpritesInRectToSurface(rect, &surface);
+ 
+-			byte *destPixels = _gfx->lockScreenPixels();
+-			byte *src = (byte *)surface.getPixels() + offset;
+-			byte *dest = destPixels + offset;
+-
+-			// This is similar to renderBan(), except it copies pixels from the surface
+-			// above instead of drawing directly to it. (Important since sprites may be
+-			// drawn on top.)
++			byte *srcBase = (byte *)surface.getPixels();
++			int linear = offset;
++			_gfx->lockScreenPixels();
++
++			// Copy sprite-composited CLUT8 pixels for BAN-touched addresses only.
+ 			while (--size >= 0) {
+-				assert(dest >= destPixels && dest < destPixels + SCREEN_WIDTH * SCREEN_HEIGHT);
++				assert(linear >= 0 && linear < SCREEN_WIDTH * SCREEN_HEIGHT);
+ 				int8 b = _banFiles[i]->readByte();
+ 				if (b == -128) {
+ 					uint16 skip = _banFiles[i]->readUint16();
+-					dest += skip;
+-					src  += skip;
++					linear += skip;
+ 				} else if (b < 0) {
+ 					byte c = _banFiles[i]->readByte();
+ 					if (c == 0) {
+-						dest += (-b) + 1;
+-						src  += (-b) + 1;
+-					}
+-					else {
+-						for (int j = 0; j < (-b) + 1; j++)
+-							*(dest++) = *(src++);
++						linear += (-b) + 1;
++					} else {
++						for (int j = 0; j < (-b) + 1; j++) {
++							_gfx->writeScreenIndexed(linear, srcBase[linear]);
++							linear++;
++						}
+ 					}
+ 				} else {
+ 					b++;
+ 					while (b-- != 0) {
+ 						byte c = _banFiles[i]->readByte();
+ 						if (c == 0) {
+-							dest++;
+-							src++;
+-						} else
+-							*(dest++) = *(src++);
++							linear++;
++						} else {
++							_gfx->writeScreenIndexed(linear, srcBase[linear]);
++							linear++;
++						}
+ 					}
+ 				}
+ 			}

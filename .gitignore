@@ -1,0 +1,20 @@
+# Local ScummVM clone / build (not the toolkit)
+tools/
+extracted/
+preview/
+work/
+png/
+raw/
+hires/
+__pycache__/
+*.py[cod]
+*.exe
+*.dll
+*.o
+*.d
+.deps/
+.python-version
+.venv/
+venv/
+.env
+*.log
