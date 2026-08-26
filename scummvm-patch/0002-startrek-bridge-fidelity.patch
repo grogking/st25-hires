@@ -1,0 +1,408 @@
+diff --git a/engines/startrek/bridge.cpp b/engines/startrek/bridge.cpp
+--- a/engines/startrek/bridge.cpp
++++ b/engines/startrek/bridge.cpp
+@@ -51,10 +51,10 @@
+ void StarTrekEngine::initBridge(bool b) {
+ 	_gfx->loadPalette("bridge");
+ 	_sound->loadMusicFile("bridge");
++	// Ambient bridge loop (stock only loaded the file).
++	_sound->playMidiMusicTracks(MIDITRACK_0, kLoopTypeRepeat);
+ 
+ 	initStarfieldPosition();
+-	// TODO: starfield
+-
+ 	loadBridge();
+ }
+ 
+@@ -69,14 +69,11 @@
+ 
+ 	loadBridgeActors();
+ 
+-	//sub_1312C();	// TODO
++	// Invisible sprite marks the viewscreen dirty so background star draws show up.
++	initStarfieldSprite(&_starfieldSprite, new StubBitmap(0, 0), _starfieldRect);
+ 
+-	// TODO
+-	//initStarfieldSprite();
+-	//initStarfieldSprite();
+-	//initStarfieldSprite();
+-	//initStarfieldSprite();
+-	//initStarfieldSprite();
++	_mouseControllingShip = false;
++	setBridgeMouseCursor();
+ }
+ 
+ void StarTrekEngine::loadBridgeActors() {
+@@ -86,9 +83,10 @@
+ 	}
+ }
+ 
+-// TODO: 2 params, change Enterprise state
+ void StarTrekEngine::setBridgeMouseCursor() {
+-	_gfx->setMouseBitmap("pushbtn" /*_mouseControllingShip ? "entcur" : "cursor"*/);
++	// replace: Tab toggles must not stack CursorMan; dialogs still push/pop.
++	_gfx->replaceMouseBitmap(_mouseControllingShip ? "entcur" : "pushbtn");
++	_gfx->toggleMouse(true);
+ }
+ 
+ void StarTrekEngine::showTextboxBridge(int talker, int textId) {
+@@ -971,21 +969,17 @@
+ }
+ 
+ void StarTrekEngine::cleanupBridge() {
+-	// TODO
+-	// if (!v_starfieldInitialized)
+-	// sub_12691()
+-	// else
+-	// clearScreenAndDelSeveralSprites()
+-	// v_mouseControllingShip = 0
+-	// v_keyboardControlsMouse = 1
++	_mouseControllingShip = false;
++	if (_bridgeTargetR3.field1e != 0) {
++		delR3(&_bridgeTargetR3);
++		_bridgeTargetR3.field1e = 0;
++	}
+ }
+ 
+ void StarTrekEngine::runBridge() {
+ 	while (_gameMode == GAMEMODE_BRIDGE && !_resetGameMode) {
+ 		handleBridgeEvents();
+ 
+-		// TODO: pseudo-3D related functionality
+-
+ 		if (_bridgeSequenceToLoad != kSeqNone) {
+ 			int bridgeSequence = _bridgeSequenceToLoad;
+ 			_bridgeSequenceToLoad = kSeqNone;
+@@ -1007,6 +1001,9 @@
+ 
+ 		switch (event.type) {
+ 		case TREKEVENT_TICK:
++			// Stars + R3 billboards: ticks only (mouse-move must not turbo flight).
++			updateBridgeStarfield(true);
++
+ 			updateActorAnimations();
+ 
+ 			//updateMouseBitmap();
+@@ -1028,7 +1025,9 @@
+ 			break;
+ 
+ 		case TREKEVENT_MOUSEMOVE:
+-			// TODO
++			// Redraw orientation only — do not advance flight Z here.
++			if (_mouseControllingShip)
++				updateBridgeStarfield(false);
+ 			break;
+ 
+ 		case TREKEVENT_RBUTTONDOWN:
+@@ -1062,7 +1061,12 @@
+ 				// TODO
+ 				break;
+ 			case Common::KEYCODE_TAB:	// Toggle between movement/fire mode and crew selection mode
+-				// TODO
++				_mouseControllingShip = !_mouseControllingShip;
++				setBridgeMouseCursor();
++				if (_mouseControllingShip) {
++					_gfx->warpMouse((_starfieldRect.left + _starfieldRect.right) / 2,
++					                (_starfieldRect.top + _starfieldRect.bottom) / 2);
++				}
+ 				break;
+ 			case Common::KEYCODE_COMMA:	// Reduce the main view screen magnification
+ 				// TODO
+@@ -1257,7 +1261,12 @@
+ }
+ 
+ void StarTrekEngine::startBattle(Common::String enemyShip) {
+-	// TODO
++	// Minimal combat: place enemy .R3S on the viewscreen and keep the tick loop
++	// drawing stars + the billboard. Full combat AI remains upstream TODO.
++	setBridgeTargetFromR3S(enemyShip);
++	_enterpriseState.underAttack = true;
++	_sound->loadMusicFile("bridgeb");
++	_sound->playMidiMusicTracks(MIDITRACK_0, kLoopTypeRepeat);
+ }
+ 
+ void StarTrekEngine::wrongDestinationRandomEncounter() {
+diff --git a/engines/startrek/space.cpp b/engines/startrek/space.cpp
+--- a/engines/startrek/space.cpp
++++ b/engines/startrek/space.cpp
+@@ -22,11 +22,16 @@
+ #include "startrek/resource.h"
+ #include "startrek/startrek.h"
+ 
++#include <cmath>
++
+ namespace StarTrek {
+ 
+ void StarTrekEngine::initStarfieldPosition() {
+ 	_starfieldPosition = Point3(0, 0, 0);
++	_bridgeYaw = 0.0;
++	_bridgePitch = 0.0;
+ 	_someMatrix = initMatrix();
++	_starPositionMatrix = initMatrix();
+ }
+ 
+ void StarTrekEngine::initStarfield(int16 x, int16 y, int16 width, int16 height, int16 arg8) {
+@@ -95,8 +100,10 @@
+ 		}
+ 
+ 		if (!star->active) {
+-			int16 var4 = getRandomWord() / var28 - xvar;
+-			int16 var6 = getRandomWord() / var2a - yvar;
++			// Original scatter is modulo-style into ~[-xvar,xvar]. Division by the
++			// span biased almost all stars to one side (clumping).
++			int16 var4 = (int16)(getRandomWord() % (uint16)var28) - xvar;
++			int16 var6 = (int16)(getRandomWord() % (uint16)var2a) - yvar;
+ 			Point3 point = constructPoint3ForStarfield(var4, var6, var8);
+ 			star->pos = matrixMult(_starPositionMatrix, point) + _starfieldPosition;
+ 			star->active = true;
+@@ -569,4 +576,115 @@
+ 	return matrix * matrix1;
+ }
+ 
++void StarTrekEngine::updateBridgeShipSteering() {
++	if (!_mouseControllingShip)
++		return;
++
++	Common::Point mouse = _gfx->getMousePos();
++	const int16 cx = (_starfieldRect.left + _starfieldRect.right) / 2;
++	const int16 cy = (_starfieldRect.top + _starfieldRect.bottom) / 2;
++	int16 dx = mouse.x - cx;
++	int16 dy = mouse.y - cy;
++
++	// Keep cursor in the viewscreen while flying.
++	int16 mx = mouse.x;
++	int16 my = mouse.y;
++	if (mx < _starfieldRect.left)
++		mx = _starfieldRect.left;
++	if (mx >= _starfieldRect.right)
++		mx = _starfieldRect.right - 1;
++	if (my < _starfieldRect.top)
++		my = _starfieldRect.top;
++	if (my >= _starfieldRect.bottom)
++		my = _starfieldRect.bottom - 1;
++	if (mx != mouse.x || my != mouse.y) {
++		_gfx->warpMouse(mx, my);
++		dx = mx - cx;
++		dy = my - cy;
++	}
++
++	// UNPROVEN deadzone / scale — replace after EXE entcur break. See BRIDGE-FIDELITY.md.
++	const int16 deadzone = 12;
++	if (ABS(dx) < deadzone)
++		dx = 0;
++	if (ABS(dy) < deadzone)
++		dy = 0;
++
++	const double turnScale = 0.004; // rad per pixel per tick — UNPROVEN
++	_bridgeYaw += (double)dx * turnScale;
++	_bridgePitch += (double)dy * turnScale;
++	if (_bridgePitch > 1.2)
++		_bridgePitch = 1.2;
++	if (_bridgePitch < -1.2)
++		_bridgePitch = -1.2;
++
++	// Screen-stable camera: yaw about Y, pitch about X, no roll.
++	const double cyaw = cos(_bridgeYaw);
++	const double syaw = sin(_bridgeYaw);
++	const double cpitch = cos(_bridgePitch);
++	const double spitch = sin(_bridgePitch);
++
++	Matrix mat = initMatrix();
++	// R = Ry(yaw) * Rx(pitch)
++	mat[0][0] = cyaw;
++	mat[0][1] = syaw * spitch;
++	mat[0][2] = syaw * cpitch;
++	mat[1][0] = 0.0;
++	mat[1][1] = cpitch;
++	mat[1][2] = -spitch;
++	mat[2][0] = -syaw;
++	mat[2][1] = cyaw * spitch;
++	mat[2][2] = cyaw * cpitch;
++	_someMatrix = mat;
++}
++
++void StarTrekEngine::updateBridgeStarfield(bool advanceFlight) {
++	updateBridgeShipSteering();
++	_starPositionMatrix = _someMatrix.invert();
++
++	// UNPROVEN forward step — intro cinematic uses world Z += 10; bridge idle needs EXE ADD.
++	if (advanceFlight)
++		_starfieldPosition += matrixMult(_someMatrix, Point3(0, 0, 2));
++
++	updateStarfieldAndShips(false);
++}
++
++Bitmap *StarTrekEngine::loadR3SBitmap(const Common::String &name) {
++	Common::MemoryReadStreamEndian *file = _resource->loadFile(name + ".r3s", 0, false);
++	if (!file)
++		return nullptr;
++	// .R3S = 36-byte orientation matrix then SHP-style bitmap payload.
++	if (file->size() > 36)
++		file->seek(36, SEEK_SET);
++	Bitmap *bitmap = new Bitmap(file, true);
++	return bitmap;
++}
++
++void StarTrekEngine::setBridgeTargetFromR3S(const Common::String &r3sBaseName) {
++	if (_bridgeTargetR3.field1e != 0) {
++		delR3(&_bridgeTargetR3);
++		_bridgeTargetR3.field1e = 0;
++		_bridgeTargetR3.bitmap = nullptr;
++	}
++
++	if (r3sBaseName.empty())
++		return;
++
++	Bitmap *bitmap = loadR3SBitmap(r3sBaseName);
++	if (!bitmap)
++		return;
++
++	_bridgeTargetR3 = R3();
++	_bridgeTargetR3.matrix = initMatrix();
++	_bridgeTargetR3.field1e = 3; // SHP billboard
++	_bridgeTargetR3.field20 = 0;
++	_bridgeTargetR3.field22 = 2000;
++	_bridgeTargetR3.field24 = 10000 / _starfieldPointDivisor;
++	_bridgeTargetR3.bitmap = bitmap;
++	// World-fixed ahead of the ship so turning does not glue the target to the camera.
++	_bridgeTargetR3.pos = _starfieldPosition + matrixMult(_someMatrix, Point3(0, 0, 5000));
++	_bridgeTargetR3.field36 = _bridgeTargetR3.pos;
++	addR3(&_bridgeTargetR3);
++}
++
+ } // End of namespace StarTrek
+diff --git a/engines/startrek/sound.cpp b/engines/startrek/sound.cpp
+--- a/engines/startrek/sound.cpp
++++ b/engines/startrek/sound.cpp
+@@ -38,7 +38,7 @@
+ Sound::Sound(StarTrekEngine *vm) : _vm(vm) {
+ 	_midiDevice = MT_AUTO;
+ 	_midiDriver = nullptr;
+-	_loopingMidiTrack = MIDITRACK_0;
++	_loopingMidiTrack = MIDITRACK_NONE;
+ 
+ 	if (_vm->getPlatform() == Common::kPlatformDOS) {
+ 		_midiDevice = MidiDriver::detectDevice(MDT_PCSPK | MDT_ADLIB | MDT_MIDI | MDT_PREFER_MT32);
+@@ -156,11 +156,13 @@
+ void Sound::loadMusicFile(const Common::String &baseSoundName) {
+ 	bool isDemo = _vm->getFeatures() & GF_DEMO;
+ 
+-	clearAllMidiSlots();
+-
++	// Same file already loaded: keep playing. Clearing first silenced music on every
++	// bridge sequence that re-loads "bridge".
+ 	if (baseSoundName == _loadedMidiFilename)
+ 		return;
+ 
++	clearAllMidiSlots();
++
+ 	_loadedMidiFilename = baseSoundName;
+ 
+ 	if (_vm->getPlatform() == Common::kPlatformDOS && !isDemo) {
+@@ -378,8 +380,14 @@
+ }
+ 
+ void Sound::checkLoopMusic() {
+-	// TODO
+-	// It might be better to get rid of this altogether and deal with it in callbacks...
++	if (!_vm->_musicWorking || !_vm->_musicEnabled)
++		return;
++	if (_loopingMidiTrack == MIDITRACK_NONE)
++		return;
++	if (isMidiPlaying())
++		return;
++
++	playMidiTrackInSlot(0, _loopingMidiTrack);
+ }
+ 
+ 
+diff --git a/engines/startrek/startrek.cpp b/engines/startrek/startrek.cpp
+--- a/engines/startrek/startrek.cpp
++++ b/engines/startrek/startrek.cpp
+@@ -81,6 +81,8 @@
+ 	_lookActionBitmapIndex = 0;
+ 
+ 	_mouseControllingShip = false;
++	_bridgeYaw = 0.0;
++	_bridgePitch = 0.0;
+ 	_keyboardControlsMouse = true;
+ 
+ 	_inQuitGameMenu = false;
+diff --git a/engines/startrek/startrek.h b/engines/startrek/startrek.h
+--- a/engines/startrek/startrek.h
++++ b/engines/startrek/startrek.h
+@@ -271,6 +271,14 @@
+ 	void showBridgeScreenTalkerWithMessages(Common::String texts[], Common::String talkerHeader, Common::String talkerId, bool removeTalker = true);
+ 	void showMissionStartEnterpriseFlyby(Common::String sequence, Common::String name);
+ 	void startBattle(Common::String enemyShip);
++	/** Load an .R3S ship view (36-byte matrix header + SHP-style bitmap). */
++	Bitmap *loadR3SBitmap(const Common::String &name);
++	/** Place / replace the bridge viewscreen target with an .R3S (or clear if empty). */
++	void setBridgeTargetFromR3S(const Common::String &r3sBaseName);
++	/** Bridge viewscreen: steer (if flight mode), optional Z advance, draw stars + R3s. */
++	void updateBridgeStarfield(bool advanceFlight = true);
++	/** Turn ship from flight-cursor offset (entcur / mouseControllingShip). */
++	void updateBridgeShipSteering();
+ 	void wrongDestinationRandomEncounter();
+ 	void bridgeCrewAction(int crewId);
+ 	void contactTargetAction();
+@@ -760,6 +768,9 @@
+ 	bool _finishedPlayingSpeech;
+ 
+ 	bool _mouseControllingShip;
++	// UNPROVEN vs EXE — placeholder until entcur path is broken live. See BRIDGE-FIDELITY.md.
++	double _bridgeYaw;
++	double _bridgePitch;
+ 
+ 	// TODO: make this work.
+ 	// When false, the keyboard generally acts in a more specific way (ie. move mouse
+@@ -780,6 +791,7 @@
+ 	int16 _starfieldXVar2, _starfieldYVar2;
+ 	Common::Rect _starfieldRect;
+ 	R3 _enterpriseR3;
++	R3 _bridgeTargetR3;
+ 	R3 *_r3List[NUM_SPACE_OBJECTS];
+ 	R3 *_orderedR3List[NUM_SPACE_OBJECTS];
+ 	Matrix _starPositionMatrix;
+diff --git a/engines/startrek/graphics.cpp b/engines/startrek/graphics.cpp
+--- a/engines/startrek/graphics.cpp
++++ b/engines/startrek/graphics.cpp
+@@ -280,10 +280,26 @@
+ void Graphics::setMouseBitmap(Common::String bitmapName) {
+ 	Bitmap *bitmap = new Bitmap(_vm->_resource->loadBitmapFile(bitmapName));
+ 
++	// Push so textbox/options can pop and restore the previous cursor.
+ 	CursorMan.pushCursor(
+ 		bitmap->pixels,
+ 		bitmap->width,
+ 		bitmap->height,
++		bitmap->xoffset,
++		bitmap->yoffset,
++		0
++	);
++
++	delete bitmap;
++}
++
++void Graphics::replaceMouseBitmap(Common::String bitmapName) {
++	Bitmap *bitmap = new Bitmap(_vm->_resource->loadBitmapFile(bitmapName));
++
++	CursorMan.replaceCursor(
++		bitmap->pixels,
++		bitmap->width,
++		bitmap->height,
+ 		bitmap->xoffset,
+ 		bitmap->yoffset,
+ 		0
+diff --git a/engines/startrek/graphics.h b/engines/startrek/graphics.h
+--- a/engines/startrek/graphics.h
++++ b/engines/startrek/graphics.h
+@@ -96,6 +96,8 @@
+ 	 * called again.
+ 	 */
+ 	void setMouseBitmap(Common::String bitmapName);
++	/** Replace current cursor without growing the CursorMan stack (bridge Tab, etc.). */
++	void replaceMouseBitmap(Common::String bitmapName);
+ 	void popMouseBitmap();
+ 	void toggleMouse(bool visible);
+ 

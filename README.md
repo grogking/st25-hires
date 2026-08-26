@@ -61,4 +61,15 @@ python -m unittest discover -s tests -v
 
 ## Next engine work
 
+Bridge fidelity patches: [`scummvm-patch/`](scummvm-patch/) + [`BRIDGE-FIDELITY.md`](BRIDGE-FIDELITY.md).
+
+Order:
+
+1. Apply `0001` (BAN) + `0002` (bridge starfield / Tab / R3S / music / cursor)
+2. Idle GOG vs ScummVM A/B at **1×** (no Tab) — four words each side
+3. Prove UNPROVEN Z-step / turn rates from EXE or DOSBox-X before retuning
+4. Only then: Enterprise / R3 mode 2 polish and `hires/` overlay
+
+Do not mix scale bugs with BAN or starfield bugs. **BAN / Enterprise must be correct at 1× first.**
+
 After BAN is correct at 1×: Enterprise / R3 mode 2 ([st25sprites.neocities.org](https://st25sprites.neocities.org) R3S notes). Then `hires/` overlay.
