@@ -1,0 +1,10 @@
+.godot/
+*.translation
+export/
+*.pck
+*.debug
+*.uid.bak
+st25.cfg
+*.PNG
+*.png
+!icon.svg

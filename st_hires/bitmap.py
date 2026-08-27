@@ -33,6 +33,9 @@ class TrekBitmap:
         return header + self.pixels
 
 
+R3S_HEADER_SIZE = 36
+
+
 def parse_bitmap(data: bytes) -> TrekBitmap:
     if len(data) < 8:
         raise ValueError("bitmap too small")
@@ -44,6 +47,31 @@ def parse_bitmap(data: bytes) -> TrekBitmap:
     if len(pixels) != width * height:
         raise ValueError("truncated bitmap pixels")
     return TrekBitmap(xoffset, yoffset, width, height, pixels)
+
+
+def parse_shp_frames(data: bytes) -> list[TrekBitmap]:
+    """SHP = one or more concatenated custom bitmaps (STARS.SHP is multi-frame)."""
+    frames: list[TrekBitmap] = []
+    pos = 0
+    length = len(data)
+    while pos + 8 <= length:
+        width = int.from_bytes(data[pos + 4 : pos + 6], "little")
+        height = int.from_bytes(data[pos + 6 : pos + 8], "little")
+        need = 8 + width * height
+        if width == 0 or height == 0 or pos + need > length:
+            break
+        frames.append(parse_bitmap(data[pos : pos + need]))
+        pos += need
+    if not frames:
+        raise ValueError("no SHP frames")
+    return frames
+
+
+def parse_r3s(data: bytes) -> TrekBitmap:
+    """R3S = 36-byte view header then one SHP-style bitmap. Palette is BRIDGE.PAL."""
+    if len(data) < R3S_HEADER_SIZE + 8:
+        raise ValueError("r3s too small")
+    return parse_bitmap(data[R3S_HEADER_SIZE:])
 
 
 def parse_palette(data: bytes) -> list[tuple[int, int, int]]:

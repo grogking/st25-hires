@@ -18,3 +18,13 @@ __pycache__/
 venv/
 .env
 *.log
+
+# Godot 4 host (import cache; never commit GOG payloads)
+godot/.godot/
+godot/st25.cfg
+TREKCD/
+DATA.DIR
+DATA.001
+DATA.RUN
+*.VOC
+*.R3S
