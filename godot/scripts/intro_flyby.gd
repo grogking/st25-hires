@@ -10,6 +10,7 @@ const STAR_COUNT := 58
 
 ## GOG beats (approx frame numbers at 18.2 Hz): stars, planet-pass, ship leaves.
 const KEY_STARS := 0
+const KEY_PLANET_IN := 12
 const KEY_SHIP_IN := 16
 const KEY_MID := 28
 const KEY_EXIT := 43
@@ -48,8 +49,9 @@ func setup(p_archive: StArchive) -> void:
 
 func _process(delta: float) -> void:
 	_accum += delta
-	while _accum >= TICK_DT:
-		_accum -= TICK_DT
+	# One sim tick per frame so dump/debug cannot skip beats on a hitch.
+	if _accum >= TICK_DT:
+		_accum = minf(_accum - TICK_DT, TICK_DT)
 		_tick += 1
 		if _tick >= LOOP_TICKS and _dump_dir.is_empty():
 			_tick = 0
@@ -245,7 +247,7 @@ func _pick_side_enterprise() -> StBitmap.Frame:
 
 func _layout_tick(tick: int) -> void:
 	# Full 320x200 — no ScummVM-style grey subtitle bar.
-	var planet_visible := tick < KEY_SPECK
+	var planet_visible := tick >= KEY_PLANET_IN and tick < KEY_SPECK
 	_planet.visible = planet_visible
 	var p_scale := 1.0
 	var p_y := -20.0
@@ -263,12 +265,12 @@ func _layout_tick(tick: int) -> void:
 	_planet.scale = Vector3(base * p_scale, base * p_scale, 1)
 	_planet.position = Vector3(10, p_y, -12)
 
-	var ship_tex_w := float(_ship.texture.get_width()) if _ship.texture else 112.0
-	var close_scale := 90.0 / max(ship_tex_w, 1.0)
+	var ship_tex_w: float = float(_ship.texture.get_width()) if _ship.texture else 112.0
+	var close_scale: float = 90.0 / maxf(ship_tex_w, 1.0)
 
 	var x := -200.0
 	var y := 22.0
-	var sc := close_scale * 0.35
+	var sc: float = close_scale * 0.35
 	var vis := tick >= KEY_SHIP_IN
 
 	if tick < KEY_SHIP_IN:

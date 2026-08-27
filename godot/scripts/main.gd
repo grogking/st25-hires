@@ -1,14 +1,14 @@
 extends Control
-## Window host: 320x200 SubViewport, nearest-neighbor to a 4:3 window.
+## Window host: 320x200 SubViewport, nearest-neighbor blit into a 4:3 window.
 ## Project stretch is canvas_items (not viewport) so a later scaler shader can hook here.
 
 const NATIVE_W := 320
 const NATIVE_H := 200
 
 var _sv: SubViewport
-var _flyby: Node3D
+var _flyby: IntroFlyby
 var _status: Label
-var _container: SubViewportContainer
+var _blit: TextureRect
 
 
 func _ready() -> void:
@@ -21,15 +21,8 @@ func _ready() -> void:
 	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(bg)
 
-	_container = SubViewportContainer.new()
-	_container.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_container.stretch = true
-	_container.stretch_shrink = 1
-	_container.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-	_container.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(_container)
-
 	_sv = SubViewport.new()
+	_sv.name = "Native320x200"
 	_sv.size = Vector2i(NATIVE_W, NATIVE_H)
 	_sv.own_world_3d = true
 	_sv.transparent_bg = false
@@ -41,7 +34,17 @@ func _ready() -> void:
 	_sv.snap_2d_transforms_to_pixel = true
 	_sv.snap_2d_vertices_to_pixel = true
 	_sv.handle_input_locally = false
-	_container.add_child(_sv)
+	_sv.disable_3d = false
+	add_child(_sv)
+
+	_blit = TextureRect.new()
+	_blit.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_blit.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_blit.stretch_mode = TextureRect.STRETCH_SCALE
+	_blit.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	_blit.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_blit.texture = _sv.get_texture()
+	add_child(_blit)
 
 	_flyby = IntroFlyby.new()
 	_sv.add_child(_flyby)
@@ -70,12 +73,12 @@ func _ready() -> void:
 
 func _watch_dumps() -> void:
 	var frames := 0
-	while frames < 400:
+	while frames < 2400:
 		await RenderingServer.frame_post_draw
 		frames += 1
 		_status.text = _flyby.status_text
 		if _flyby.maybe_dump_native(_sv):
 			get_tree().quit()
 			return
-	push_warning("ST25 dump timed out after 400 frames")
+	push_warning("ST25 dump timed out after 2400 frames")
 	get_tree().quit()
