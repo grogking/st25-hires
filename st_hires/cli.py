@@ -11,13 +11,15 @@ import json
 import sys
 from pathlib import Path
 
-from .archive import find_gog_roots, load_archive
+from .archive import find_gog_roots, load_archive, load_named_file, parse_dir
 from .ban import apply_ban_frame, linear_to_xy
 from .bitmap import (
     TrekBitmap,
     bitmap_to_rgba,
     parse_bitmap,
     parse_palette,
+    parse_r3s,
+    parse_shp_frames,
     quantize_to_palette,
 )
 from .lzss import wrap_patch_file
@@ -151,6 +153,42 @@ def cmd_ban_preview(args: argparse.Namespace) -> int:
     return 0
 
 
+def _first_root(game_dir: Path) -> Path:
+    roots = find_gog_roots(game_dir)
+    if not roots:
+        raise SystemExit(f"No GOG data under {game_dir}")
+    return roots[0]
+
+
+def cmd_list_files(args: argparse.Namespace) -> int:
+    root = _first_root(Path(args.game_dir))
+    names = {p.name.lower(): p for p in root.iterdir() if p.is_file()}
+    entries = parse_dir(names["data.dir"].read_bytes())
+    for entry in entries:
+        print(f"{entry.name}\tcount={entry.file_count}\toff={entry.offset}")
+    print(f"{root}: {len(entries)} dir entries")
+    return 0
+
+
+def cmd_dump_file(args: argparse.Namespace) -> int:
+    root = _first_root(Path(args.game_dir))
+    blob = load_named_file(root, args.name, args.index)
+    out = Path(args.out) if args.out else Path(args.name.replace("/", "_"))
+    out.write_bytes(blob)
+    extra = ""
+    try:
+        if args.name.upper().endswith(".R3S"):
+            bmp = parse_r3s(blob)
+            extra = f" r3s {bmp.width}x{bmp.height} off=({bmp.xoffset},{bmp.yoffset})"
+        elif args.name.upper().endswith(".SHP"):
+            frames = parse_shp_frames(blob)
+            extra = f" shp frames={len(frames)} first={frames[0].width}x{frames[0].height}"
+    except ValueError:
+        extra = ""
+    print(f"{args.name}[{args.index}] {len(blob)} bytes -> {out}{extra}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="st_hires")
     parser.add_argument("--game-dir", default=str(DEFAULT_GAME_DIR))
@@ -183,6 +221,15 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("ban-preview")
     p.add_argument("ban")
     p.set_defaults(func=cmd_ban_preview)
+
+    p = sub.add_parser("list-files")
+    p.set_defaults(func=cmd_list_files)
+
+    p = sub.add_parser("dump-file")
+    p.add_argument("name", help="archive member, e.g. ENT33.R3S or STARS.SHP")
+    p.add_argument("--index", type=int, default=0, help="sequential fileIndex (elevation)")
+    p.add_argument("--out", default="")
+    p.set_defaults(func=cmd_dump_file)
 
     args = parser.parse_args(argv)
     return args.func(args)

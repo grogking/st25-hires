@@ -51,6 +51,56 @@ def extract_file(data_001: bytes, offset: int) -> bytes:
     return decode_lzss(payload, uncmp)
 
 
+def sequential_data001_offset(data_run: bytes, run_offset: int, file_index: int) -> int:
+    """Map a sequential DIR entry onto a DATA.001 record via DATA.RUN.
+
+    CD layout (GOG TREKCD): the DIR offset is an index into DATA.RUN. At that
+    index: 24-bit LE start in DATA.001, then uint16 LE strides for files 1..n.
+    """
+    if file_index < 0:
+        raise ValueError("file_index must be >= 0")
+    pos = run_offset
+    if pos + 3 > len(data_run):
+        raise ValueError(f"truncated DATA.RUN header at {run_offset}")
+    offset = data_run[pos] + (data_run[pos + 1] << 8) + (data_run[pos + 2] << 16)
+    pos += 3
+    for _ in range(file_index):
+        if pos + 2 > len(data_run):
+            raise ValueError("truncated DATA.RUN stride table")
+        offset += int.from_bytes(data_run[pos : pos + 2], "little")
+        pos += 2
+    return offset
+
+
+def _file_map(root: Path) -> dict[str, Path]:
+    return {p.name.lower(): p for p in root.iterdir() if p.is_file()}
+
+
+def load_named_file(root: Path, name: str, file_index: int = 0) -> bytes:
+    """Decompress one archive member. ``file_index`` selects a sequential run."""
+    names = _file_map(root)
+    if "data.dir" not in names or "data.001" not in names:
+        raise FileNotFoundError(f"DATA.DIR / DATA.001 missing under {root}")
+    entries = {e.name.upper(): e for e in parse_dir(names["data.dir"].read_bytes())}
+    key = name.upper()
+    if key not in entries:
+        raise KeyError(name)
+    entry = entries[key]
+    data_001 = names["data.001"].read_bytes()
+    if entry.file_count == 1:
+        if file_index != 0:
+            raise IndexError(f"{name} is not a sequential file")
+        return extract_file(data_001, entry.offset)
+    if file_index >= entry.file_count:
+        raise IndexError(f"{name} file_index {file_index} >= {entry.file_count}")
+    if "data.run" not in names:
+        raise FileNotFoundError(f"DATA.RUN missing under {root} (needed for {name})")
+    data001_off = sequential_data001_offset(
+        names["data.run"].read_bytes(), entry.offset, file_index
+    )
+    return extract_file(data_001, data001_off)
+
+
 def find_gog_roots(game_dir: Path) -> list[Path]:
     """Directories that contain DATA.DIR + DATA.001 (case-insensitive)."""
     roots: list[Path] = []
